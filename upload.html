@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>上傳照片</title>
+<style>
+  :root{
+    --bg:#0e0f13; --panel:#16181f; --line:#262a35;
+    --text:#e8eaf0; --muted:#9aa0ae; --accent:#4f8cff; --ok:#3ecf8e; --err:#ff6b6b;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; background:var(--bg); color:var(--text); min-height:100vh;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang TC","Microsoft JhengHei",sans-serif;
+    padding:20px 16px 60px;
+  }
+  .wrap{ max-width:560px; margin:0 auto; }
+  h1{ font-size:20px; margin:0 0 4px; }
+  .sub{ color:var(--muted); font-size:14px; margin-bottom:20px; }
+  .album-box{
+    background:var(--panel); border:1px solid var(--line); border-radius:12px;
+    padding:14px 16px; margin-bottom:18px;
+  }
+  .album-box label{ font-size:13px; color:var(--muted); display:block; margin-bottom:6px; }
+  .album-name{ font-size:17px; font-weight:600; }
+  select{
+    width:100%; padding:10px; border-radius:8px; border:1px solid var(--line);
+    background:#0b0c10; color:var(--text); font-size:15px;
+  }
+  .drop{
+    border:2px dashed #333a47; border-radius:14px; padding:34px 16px; text-align:center;
+    cursor:pointer; transition:.15s; background:var(--panel);
+  }
+  .drop:hover, .drop.over{ border-color:var(--accent); background:#191c24; }
+  .drop .big{ font-size:34px; }
+  .drop .t{ margin-top:8px; font-size:15px; }
+  .drop .s{ color:var(--muted); font-size:13px; margin-top:4px; }
+  input[type=file]{ display:none; }
+  .list{ margin-top:18px; display:flex; flex-direction:column; gap:10px; }
+  .item{
+    display:flex; align-items:center; gap:12px; background:var(--panel);
+    border:1px solid var(--line); border-radius:10px; padding:8px 10px;
+  }
+  .item img{ width:52px; height:52px; object-fit:cover; border-radius:6px; background:#000; flex:0 0 auto; }
+  .item .info{ flex:1; min-width:0; }
+  .item .fn{ font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .bar{ height:6px; background:#20242e; border-radius:3px; margin-top:6px; overflow:hidden; }
+  .bar > i{ display:block; height:100%; width:0; background:var(--accent); transition:.2s; }
+  .st{ font-size:12px; margin-top:4px; }
+  .st.ok{ color:var(--ok); } .st.err{ color:var(--err); }
+  .note{ margin-top:22px; color:var(--muted); font-size:13px; line-height:1.7; text-align:center; }
+  .toast{
+    position:fixed; left:50%; bottom:24px; transform:translateX(-50%);
+    background:#1d2029; border:1px solid var(--line); padding:10px 18px; border-radius:10px;
+    font-size:14px; opacity:0; transition:.25s; pointer-events:none;
+  }
+  .toast.show{ opacity:1; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>上傳照片</h1>
+  <div class="sub">選擇手機或電腦裡的照片即可上傳，不需要登入或註冊。</div>
+
+  <div class="album-box">
+    <label>上傳到相簿</label>
+    <div class="album-name" id="albumFixed" style="display:none"></div>
+    <select id="albumSelect" style="display:none"></select>
+  </div>
+
+  <div class="drop" id="drop">
+    <div class="big">＋</div>
+    <div class="t">點這裡選擇照片</div>
+    <div class="s">可一次選多張，會自動壓縮後上傳</div>
+  </div>
+  <input type="file" id="file" accept="image/*" multiple>
+
+  <div class="list" id="list"></div>
+
+  <div class="note">
+    照片會自動縮小到最長邊 2048px、品質 85% 再上傳，<br>以節省流量與空間。原始檔不會離開你的裝置。
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+<script>
+/* ==== Firebase 設定（可公開） ==== */
+const firebaseConfig = {
+  apiKey: "AIzaSyDtlcsQY4TTCbaUxg0Njm56gIYlS-nOQNs",
+  authDomain: "photo-album-2b566.firebaseapp.com",
+  databaseURL: "https://photo-album-2b566-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "photo-album-2b566",
+  storageBucket: "photo-album-2b566.firebasestorage.app",
+  messagingSenderId: "95143729398",
+  appId: "1:95143729398:web:1a5f79d4f71b890a8c74d7"
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+const auth = firebase.auth();
+
+/* ==== 壓縮參數 ==== */
+const MAX_EDGE = 2048;   // 大圖最長邊
+const QUALITY  = 0.85;   // 大圖品質
+const THUMB_EDGE = 300;  // 縮圖最長邊
+const THUMB_Q = 0.7;
+
+const params = new URLSearchParams(location.search);
+let albumId = params.get('album');
+
+const els = {
+  fixed: document.getElementById('albumFixed'),
+  select: document.getElementById('albumSelect'),
+  drop: document.getElementById('drop'),
+  file: document.getElementById('file'),
+  list: document.getElementById('list'),
+  toast: document.getElementById('toast'),
+};
+
+/* ==== 匿名登入（學員看不到，僅用來擋外部亂寫） ==== */
+let authReady = auth.signInAnonymously().catch(err=>{
+  toast('登入失敗：請通知老師到 Firebase 開啟「匿名登入」', 6000);
+  console.error(err);
+});
+
+/* ==== 決定相簿 ==== */
+function setupAlbum(){
+  if(albumId){
+    els.fixed.style.display='block';
+    els.fixed.textContent = '載入中…';
+    db.ref('albums/'+albumId+'/name').once('value').then(s=>{
+      els.fixed.textContent = s.val() || '（未命名相簿）';
+      document.title = '上傳到：' + (s.val()||'相簿');
+    });
+  } else {
+    // 沒有指定相簿：提供下拉選單挑選
+    els.select.style.display='block';
+    db.ref('albums').once('value').then(s=>{
+      const val = s.val() || {};
+      const ids = Object.keys(val).sort((a,b)=> (val[b].created||0)-(val[a].created||0));
+      if(!ids.length){
+        els.select.innerHTML = '<option>（目前沒有相簿，請通知老師）</option>';
+        return;
+      }
+      els.select.innerHTML = '<option value="">請選擇相簿…</option>' +
+        ids.map(id=>`<option value="${id}">${(val[id].name||id).replace(/</g,'&lt;')}</option>`).join('');
+      els.select.onchange = ()=> albumId = els.select.value || null;
+    });
+  }
+}
+setupAlbum();
+
+/* ==== 選檔 / 拖曳 ==== */
+els.drop.onclick = ()=> els.file.click();
+els.file.onchange = ()=>{ handleFiles([...els.file.files]); els.file.value=''; };
+['dragover','dragenter'].forEach(ev=> els.drop.addEventListener(ev, e=>{e.preventDefault(); els.drop.classList.add('over');}));
+['dragleave','drop'].forEach(ev=> els.drop.addEventListener(ev, e=>{e.preventDefault(); els.drop.classList.remove('over');}));
+els.drop.addEventListener('drop', e=>{
+  const fs = [...(e.dataTransfer?.files||[])].filter(f=> f.type.startsWith('image/'));
+  if(fs.length) handleFiles(fs);
+});
+
+async function handleFiles(files){
+  if(!albumId){ toast('請先選擇要上傳的相簿'); return; }
+  for(const f of files){ queueOne(f); }
+}
+
+async function queueOne(file){
+  const row = document.createElement('div');
+  row.className='item';
+  row.innerHTML = `<img alt=""><div class="info">
+     <div class="fn">${file.name.replace(/</g,'&lt;')}</div>
+     <div class="bar"><i></i></div><div class="st">準備中…</div></div>`;
+  els.list.prepend(row);
+  const imgEl = row.querySelector('img');
+  const barEl = row.querySelector('.bar > i');
+  const stEl  = row.querySelector('.st');
+  const setBar = p=> barEl.style.width = p+'%';
+  const setSt  = (t,cls)=>{ stEl.textContent=t; stEl.className='st'+(cls?' '+cls:''); };
+
+  try{
+    await authReady;
+    setSt('壓縮中…'); setBar(20);
+    const {full, thumb} = await compress(file);
+    imgEl.src = thumb;
+    setBar(55); setSt('上傳中…');
+
+    const key = db.ref('photos/'+albumId).push().key;
+    const updates = {};
+    updates['photos/'+albumId+'/'+key] = { thumb, ts: firebase.database.ServerValue.TIMESTAMP, caption:'' };
+    updates['fulls/'+albumId+'/'+key] = full;
+    await db.ref().update(updates);
+
+    setBar(100); setSt('已上傳 ✓','ok');
+  }catch(err){
+    console.error(err);
+    setBar(100); setSt('失敗：'+(err.message||err),'err');
+  }
+}
+
+/* ==== 影像壓縮（含 EXIF 方向修正） ==== */
+async function compress(file){
+  let bitmap;
+  try{
+    bitmap = await createImageBitmap(file, {imageOrientation:'from-image'});
+  }catch(e){
+    bitmap = await createImageBitmap(file); // 後備
+  }
+  const full  = drawScaled(bitmap, MAX_EDGE, QUALITY);
+  const thumb = drawScaled(bitmap, THUMB_EDGE, THUMB_Q);
+  bitmap.close && bitmap.close();
+  return {full, thumb};
+}
+
+function drawScaled(bitmap, maxEdge, q){
+  let {width:w, height:h} = bitmap;
+  const scale = Math.min(1, maxEdge / Math.max(w, h));
+  w = Math.round(w*scale); h = Math.round(h*scale);
+  const c = document.createElement('canvas');
+  c.width=w; c.height=h;
+  const ctx = c.getContext('2d');
+  ctx.drawImage(bitmap, 0, 0, w, h);
+  return c.toDataURL('image/jpeg', q);
+}
+
+/* ==== 小工具 ==== */
+let toastTimer;
+function toast(msg, ms=2600){
+  els.toast.textContent=msg; els.toast.classList.add('show');
+  clearTimeout(toastTimer); toastTimer=setTimeout(()=>els.toast.classList.remove('show'), ms);
+}
+</script>
+</body>
+</html>

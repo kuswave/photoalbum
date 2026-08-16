@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>相簿瀏覽</title>
+<style>
+  :root{
+    --bg:#0e0f13; --panel:#16181f; --line:#262a35;
+    --text:#e8eaf0; --muted:#9aa0ae; --accent:#4f8cff;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;height:100%;}
+  body{
+    background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang TC","Microsoft JhengHei",sans-serif;
+    display:flex; flex-direction:column; height:100vh; overflow:hidden;
+  }
+  header{
+    padding:14px 18px; border-bottom:1px solid var(--line);
+    display:flex; align-items:baseline; gap:12px; flex-wrap:wrap;
+  }
+  header h1{ font-size:18px; margin:0; font-weight:600; }
+  header .count{ color:var(--muted); font-size:13px; }
+  .stage{
+    flex:1; position:relative; display:flex; align-items:center; justify-content:center;
+    min-height:0; padding:16px; overflow:hidden;
+  }
+  .stage img{
+    max-width:100%; max-height:100%; object-fit:contain;
+    border-radius:8px; box-shadow:0 6px 30px rgba(0,0,0,.5);
+  }
+  .caption{
+    position:absolute; left:0; right:0; bottom:0;
+    padding:10px 16px; text-align:center; font-size:14px; color:#dfe3ec;
+    background:linear-gradient(transparent, rgba(0,0,0,.55));
+    pointer-events:none;
+  }
+  .nav{
+    position:absolute; top:50%; transform:translateY(-50%);
+    width:44px; height:64px; border:none; cursor:pointer;
+    background:rgba(20,22,30,.55); color:#fff; font-size:24px;
+    display:flex; align-items:center; justify-content:center; border-radius:8px;
+  }
+  .nav:hover{ background:rgba(30,34,46,.8); }
+  .nav.prev{ left:10px; } .nav.next{ right:10px; }
+  .strip-wrap{ border-top:1px solid var(--line); background:var(--panel); }
+  .strip{
+    display:flex; gap:8px; padding:10px; overflow-x:auto; overflow-y:hidden;
+    scroll-behavior:smooth; -webkit-overflow-scrolling:touch;
+  }
+  .strip::-webkit-scrollbar{ height:8px; }
+  .strip::-webkit-scrollbar-thumb{ background:#333844; border-radius:4px; }
+  .thumb{
+    flex:0 0 auto; width:84px; height:84px; border-radius:6px; overflow:hidden;
+    cursor:pointer; border:2px solid transparent; background:#0b0c10;
+  }
+  .thumb img{ width:100%; height:100%; object-fit:cover; display:block; }
+  .thumb.active{ border-color:var(--accent); }
+  .msg{ margin:auto; text-align:center; color:var(--muted); padding:24px; line-height:1.7; }
+  .spinner{
+    width:34px;height:34px;border:3px solid #333;border-top-color:var(--accent);
+    border-radius:50%; animation:spin .8s linear infinite; margin:auto;
+  }
+  @keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+  <header>
+    <h1 id="albumName">載入中…</h1>
+    <span class="count" id="count"></span>
+  </header>
+
+  <div class="stage" id="stage">
+    <div class="msg" id="stageMsg"><div class="spinner"></div></div>
+    <img id="bigImg" alt="" style="display:none">
+    <div class="caption" id="caption" style="display:none"></div>
+    <button class="nav prev" id="prevBtn" style="display:none" aria-label="上一張">‹</button>
+    <button class="nav next" id="nextBtn" style="display:none" aria-label="下一張">›</button>
+  </div>
+
+  <div class="strip-wrap">
+    <div class="strip" id="strip"></div>
+  </div>
+
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+<script>
+/* ==== Firebase 設定（可公開，屬於前端正常內容） ==== */
+const firebaseConfig = {
+  apiKey: "AIzaSyDtlcsQY4TTCbaUxg0Njm56gIYlS-nOQNs",
+  authDomain: "photo-album-2b566.firebaseapp.com",
+  databaseURL: "https://photo-album-2b566-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "photo-album-2b566",
+  storageBucket: "photo-album-2b566.firebasestorage.app",
+  messagingSenderId: "95143729398",
+  appId: "1:95143729398:web:1a5f79d4f71b890a8c74d7"
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+
+/* ==== 讀取網址上的相簿 ID ==== */
+const params = new URLSearchParams(location.search);
+const albumId = params.get('album');
+
+const els = {
+  name: document.getElementById('albumName'),
+  count: document.getElementById('count'),
+  stageMsg: document.getElementById('stageMsg'),
+  big: document.getElementById('bigImg'),
+  caption: document.getElementById('caption'),
+  prev: document.getElementById('prevBtn'),
+  next: document.getElementById('nextBtn'),
+  strip: document.getElementById('strip'),
+};
+
+let photos = [];        // [{id, thumb, ts, caption}]
+let current = -1;
+const fullCache = {};   // photoId -> dataURL
+
+function showMsg(html){ els.stageMsg.innerHTML = html; els.stageMsg.style.display='block'; }
+function hideMsg(){ els.stageMsg.style.display='none'; }
+
+if(!albumId){
+  els.name.textContent = '未指定相簿';
+  showMsg('這個連結沒有指定相簿。<br>請使用課程提供的專屬觀看連結（網址結尾要有 <code>?album=…</code>）。');
+} else {
+  init();
+}
+
+function init(){
+  // 相簿名稱
+  db.ref('albums/'+albumId+'/name').on('value', s=>{
+    els.name.textContent = s.val() || '（未命名相簿）';
+    document.title = (s.val()||'相簿') + ' - 瀏覽';
+  });
+
+  // 照片清單（只載縮圖，速度快）
+  db.ref('photos/'+albumId).on('value', snap=>{
+    const val = snap.val() || {};
+    photos = Object.keys(val).map(id=>({
+      id, thumb: val[id].thumb, ts: val[id].ts||0, caption: val[id].caption||''
+    })).sort((a,b)=> a.ts - b.ts);
+
+    els.count.textContent = photos.length ? `共 ${photos.length} 張` : '';
+    renderStrip();
+
+    if(!photos.length){
+      els.big.style.display='none'; els.caption.style.display='none';
+      els.prev.style.display='none'; els.next.style.display='none';
+      showMsg('這個相簿還沒有照片。');
+      return;
+    }
+    // 保持目前選取，若失效則選第一張
+    if(current < 0 || current >= photos.length) select(0);
+    else select(current, true);
+  }, err=>{
+    showMsg('讀取失敗：' + err.message);
+  });
+}
+
+function renderStrip(){
+  els.strip.innerHTML='';
+  photos.forEach((p,i)=>{
+    const d = document.createElement('div');
+    d.className = 'thumb' + (i===current?' active':'');
+    d.dataset.i = i;
+    const img = document.createElement('img');
+    img.src = p.thumb; img.alt='';
+    d.appendChild(img);
+    d.onclick = ()=> select(i);
+    els.strip.appendChild(d);
+  });
+}
+
+function select(i, keep){
+  if(i<0 || i>=photos.length) return;
+  current = i;
+  const p = photos[i];
+
+  // 更新縮圖高亮
+  [...els.strip.children].forEach((c,idx)=> c.classList.toggle('active', idx===i));
+  if(!keep){
+    const active = els.strip.children[i];
+    if(active) active.scrollIntoView({inline:'center', block:'nearest'});
+  }
+
+  els.prev.style.display = els.next.style.display = photos.length>1 ? 'flex':'none';
+  els.caption.style.display = p.caption ? 'block':'none';
+  els.caption.textContent = p.caption || '';
+
+  // 先顯示縮圖當作底圖，再載大圖
+  if(fullCache[p.id]){
+    els.big.src = fullCache[p.id]; els.big.style.display='block'; hideMsg();
+  } else {
+    els.big.src = p.thumb; els.big.style.display='block';
+    showMsg('<div class="spinner"></div>');
+    db.ref('fulls/'+albumId+'/'+p.id).once('value').then(s=>{
+      const full = s.val();
+      if(full){ fullCache[p.id]=full; }
+      // 只有還停在同一張時才更新，避免快速切換錯亂
+      if(current===i){
+        els.big.src = full || p.thumb;
+        hideMsg();
+      }
+    }).catch(()=> hideMsg());
+  }
+}
+
+els.prev.onclick = ()=> select((current-1+photos.length)%photos.length);
+els.next.onclick = ()=> select((current+1)%photos.length);
+document.addEventListener('keydown', e=>{
+  if(e.key==='ArrowLeft') els.prev.onclick();
+  if(e.key==='ArrowRight') els.next.onclick();
+});
+</script>
+</body>
+</html>
